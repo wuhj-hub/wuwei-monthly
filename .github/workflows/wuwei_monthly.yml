@@ -2,7 +2,7 @@ name: 武威月线G1 月底自动扫描
 
 on:
   schedule:
-    # 每月 1 日 00:00 UTC = 北京 8:00（上月 A股收盘后, 月线数据已定稿）
+    # 每月 1 日 00:00 UTC = 北京 08:00（月线数据已定稿，起床即可看到结果）
     - cron: '0 0 1 * *'
   workflow_dispatch:
     inputs:
@@ -60,6 +60,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git pull --rebase
           git add -A outputs all_mainboard.csv
           if git diff --cached --quiet; then
             echo "无变更, 跳过提交"
