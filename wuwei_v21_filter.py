@@ -37,6 +37,47 @@ def cli(cmd, retry=3):
     return ""
 
 
+def fetch_ma250(codes):
+    """批量获取年线(MA250)数据，返回 {code: {close, ma250, ratio}}"""
+    ma = {}
+    for i in range(0, len(codes), 20):
+        batch = codes[i:i + 20]
+        out = cli(f"technical {','.join(batch)} --group ma")
+        lines = [l for l in out.splitlines() if l.strip().startswith("|")]
+        if len(lines) >= 2:
+            hdr = [h.strip() for h in lines[0].strip().strip("|").split("|") if h.strip()]
+            try:
+                ci = hdr.index("code"); pi = hdr.index("closePrice"); mi = hdr.index("ma.MA_250")
+            except ValueError:
+                continue
+            for l in lines[2:]:
+                cols = [x.strip() for x in l.strip().strip("|").split("|") if x.strip()]
+                if len(cols) > max(ci, pi, mi):
+                    code, price_s, ma250_s = cols[ci], cols[pi], cols[mi]
+                    if code in set(codes):
+                        try:
+                            price, ma250 = float(price_s), float(ma250_s)
+                            ratio = (price - ma250) / ma250 if ma250 > 0 else -999
+                            ma[code] = {"close": price, "ma250": ma250, "ratio": ratio}
+                        except (ValueError, TypeError):
+                            pass
+        print(f"[ma250] batch {i} ({len(batch)}) done", file=sys.stderr)
+    return ma
+
+
+def score_ma250(ratio):
+    """年线(MA250)评分（满分10分），依据月线擒黑马逻辑"""
+    if ratio is None or ratio == -999:
+        return 0, "无MA250数据"
+    if ratio < 0:
+        return 0, f"跌破年线({ratio*100:.1f}%)"
+    if ratio < 0.05:
+        return 10, f"年线支撑区(超MA250 {ratio*100:.1f}%) ★"
+    if ratio < 0.20:
+        return 7, f"年线上方({ratio*100:.1f}%)"
+    return 4, f"远离年线({ratio*100:.1f}%)"
+
+
 def fetch_finance(codes):
     """批量拉利润表(lrb)，返回 {code:(net_profit_str, enddate)}。复用 run_filter.py 逻辑。"""
     fin = {}
@@ -70,8 +111,8 @@ def status_of(npv):
     return "盈利" if v > 0 else "亏损"
 
 
-def score(sig_type, support, shrink_max, fst):
-    """六维评分（满分100），v2.1 权重：信号30/支撑30/缩量10/基本面20/大盘5/价格5"""
+def score(sig_type, support, shrink_max, fst, ma250_ratio=None):
+    """七维评分（满分100），v2.1 权重：信号30/支撑30/缩量10/基本面20/年线10"""
     s_signal = 30 if sig_type == "双阴" else 15
     if support >= 0.08:
         s_support = 30
@@ -97,9 +138,9 @@ def score(sig_type, support, shrink_max, fst):
         s_fin = 12
     else:
         s_fin = 0
-    s_market, s_price = 5, 5
-    total = s_signal + s_support + s_shrink + s_fin + s_market + s_price
-    return total, (s_signal, s_support, s_shrink, s_fin, s_market, s_price)
+    s_ma250, ma250_note = score_ma250(ma250_ratio)
+    total = s_signal + s_support + s_shrink + s_fin + s_ma250
+    return total, (s_signal, s_support, s_shrink, s_fin, s_ma250), ma250_note
 
 
 def decide(sig_type, support, fst, total):
@@ -173,18 +214,26 @@ def main():
     codes = [r[0] for r in results]
     fin = fetch_finance(codes)
 
+    # 年线(MA250)批量
+    ma250 = fetch_ma250(codes)
+
     # 评分 + 决策
     out_rows = []
     for code, name, res, support, shrink_max in results:
         npv, ed = fin.get(code, ("", ""))
         fst = status_of(npv)
-        total, _ = score(res, support, shrink_max, fst)
+        ma_info = ma250.get(code, {})
+        ma_ratio = ma_info.get("ratio") if ma_info else None
+        total, _, ma250_note = score(res, support, shrink_max, fst, ma_ratio)
         decision, reason = decide(res, support, fst, total)
         out_rows.append({
             "code": code, "name": name, "signal": res,
             "support_pct": round(support * 100, 2),
             "shrink_max_pct": round(shrink_max * 100, 1),
             "finance": fst, "net_profit": npv, "report_end": ed,
+            "ma250_status": ma250_note,
+            "ma250_close": ma_info.get("close", ""),
+            "ma250_value": ma_info.get("ma250", ""),
             "score": total, "decision": decision, "reason": reason,
         })
 
@@ -193,10 +242,12 @@ def main():
     with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f)
         w.writerow(["code", "name", "signal", "support_pct", "shrink_max_pct",
-                    "finance", "net_profit", "report_end", "score", "decision", "reason"])
+                     "finance", "net_profit", "report_end", "ma250_status",
+                     "ma250_close", "ma250_value", "score", "decision", "reason"])
         for r in out_rows:
             w.writerow([r["code"], r["name"], r["signal"], r["support_pct"], r["shrink_max_pct"],
-                        r["finance"], r["net_profit"], r["report_end"], r["score"], r["decision"], r["reason"]])
+                        r["finance"], r["net_profit"], r["report_end"], r["ma250_status"],
+                        r["ma250_close"], r["ma250_value"], r["score"], r["decision"], r["reason"]])
 
     # 汇总
     n_heavy = sum(1 for r in out_rows if r["decision"] == "重仓")
@@ -206,28 +257,33 @@ def main():
     n_profit = sum(1 for r in out_rows if r["finance"] == "盈利")
     n_loss = sum(1 for r in out_rows if r["finance"] == "亏损")
     n_nodata = sum(1 for r in out_rows if r["finance"] == "无数据")
+    n_ma250_pass = sum(1 for r in out_rows if r["ma250_status"].startswith("年线支撑区"))
+    n_ma250_above = sum(1 for r in out_rows if r["ma250_status"].startswith(("年线支撑区", "年线上方")))
+    n_ma250_fail = sum(1 for r in out_rows if "跌破" in r["ma250_status"] or "无MA250" in r["ma250_status"])
 
     # 写 MD
     md_path = os.path.join(OUT, f"ww_period_{period}_v21.md")
     with open(md_path, "w", encoding="utf-8") as f:
         f.write(f"# 武威 v2.1 质量过滤 · 精选池（{period}）\n\n")
         f.write(f"- 输入：G1 全市场月线扫描 **{len(g1)}** 只 → 月线有效 **{len(results)}** 只\n")
-        f.write("- 规则：六维评分 + 一票否决（浅支撑<5% / 亏损股放弃），详见《武威评分标准_v2.1_回测校准版》\n")
+        f.write("- 规则：七维评分（信号30+支撑30+缩量10+基本面20+年线10）+ 一票否决（浅支撑<5% / 亏损股放弃）\n")
+        f.write("- 年线(MA250)维度：依据「月线擒黑马」双阴无量+年线突破回踩逻辑\n")
         f.write("- 配套 SOP：《武威实战SOP_G1初筛_v2.1过滤_MA20止盈》\n\n")
         f.write("## 一、总体统计\n\n")
         f.write(f"- 重仓（★ 双阴+深支撑+盈利+评分≥75）：**{n_heavy}**\n")
         f.write(f"- 轻仓（一阴深支撑 / 未达重仓）：**{n_light}**\n")
         f.write(f"- 轻仓/观望：**{n_obs}**\n")
         f.write(f"- 否决（浅支撑 / 亏损）：**{n_veto}**\n")
-        f.write(f"- 基本面：盈利 {n_profit} / 亏损 {n_loss} / 无数据 {n_nodata}\n\n")
+        f.write(f"- 基本面：盈利 {n_profit} / 亏损 {n_loss} / 无数据 {n_nodata}\n")
+        f.write(f"- 年线MA250：支撑区 {n_ma250_pass} / 年线上方 {n_ma250_above-n_ma250_pass} / 跌破年线 {n_ma250_fail}\n\n")
         f.write("## 二、重仓精选池（★）\n\n")
-        f.write("| 代码 | 名称 | 信号 | 支撑% | 缩量max% | 基本面 | 评分 | 报告期 |\n|---|---|---|---|---|---|---|---|\n")
+        f.write("| 代码 | 名称 | 信号 | 支撑% | 缩量max% | 基本面 | 年线 | 评分 | 报告期 |\n|---|---|---|---|---|---|---|---|---|\n")
         for r in sorted([x for x in out_rows if x["decision"] == "重仓"], key=lambda x: -x["score"]):
-            f.write(f"| {r['code']} | {r['name']} | {r['signal']} | {r['support_pct']} | {r['shrink_max_pct']} | {r['finance']} | {r['score']} | {r['report_end']} |\n")
+            f.write(f"| {r['code']} | {r['name']} | {r['signal']} | {r['support_pct']} | {r['shrink_max_pct']} | {r['finance']} | {r['ma250_status'][:6]} | {r['score']} | {r['report_end']} |\n")
         f.write("\n## 三、轻仓 / 观望池\n\n")
-        f.write("| 代码 | 名称 | 信号 | 支撑% | 缩量max% | 基本面 | 评分 | 决策 | 原因 |\n|---|---|---|---|---|---|---|---|---|\n")
+        f.write("| 代码 | 名称 | 信号 | 支撑% | 缩量max% | 基本面 | 年线 | 评分 | 决策 | 原因 |\n|---|---|---|---|---|---|---|---|---|---|\n")
         for r in sorted([x for x in out_rows if x["decision"] in ("轻仓", "轻仓/观望")], key=lambda x: -x["score"]):
-            f.write(f"| {r['code']} | {r['name']} | {r['signal']} | {r['support_pct']} | {r['shrink_max_pct']} | {r['finance']} | {r['score']} | {r['decision']} | {r['reason']} |\n")
+            f.write(f"| {r['code']} | {r['name']} | {r['signal']} | {r['support_pct']} | {r['shrink_max_pct']} | {r['finance']} | {r['ma250_status'][:6]} | {r['score']} | {r['decision']} | {r['reason']} |\n")
         f.write("\n## 四、否决池（浅支撑 / 亏损）\n\n")
         f.write("| 代码 | 名称 | 信号 | 支撑% | 基本面 | 原因 |\n|---|---|---|---|---|---|\n")
         for r in [x for x in out_rows if x["decision"] == "否决"]:
