@@ -2,7 +2,7 @@ name: 武威月线G1 月底自动扫描
 
 on:
   schedule:
-    # 每月 1 日 08:00 UTC = 北京 16:00（上月 A股收盘后, 月线数据已定稿）
+    # 每月 1 日 00:00 UTC = 北京 8:00（上月 A股收盘后, 月线数据已定稿）
     - cron: '0 0 1 * *'
   workflow_dispatch:
     inputs:
