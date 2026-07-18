@@ -1,0 +1,69 @@
+name: 武威月线G1 月底自动扫描
+
+on:
+  schedule:
+    # 每月 1 日 08:00 UTC = 北京 16:00（上月 A股收盘后, 月线数据已定稿）
+    - cron: '0 8 1 * *'
+  workflow_dispatch:
+    inputs:
+      period:
+        description: '指定月份 YYYYMM（留空=上月）'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wuwei-monthly
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      IMA_OPENAPI_CLIENTID: ${{ secrets.IMA_OPENAPI_CLIENTID }}
+      IMA_OPENAPI_APIKEY: ${{ secrets.IMA_OPENAPI_APIKEY }}
+      WUWEI_KB_ID: ${{ secrets.WUWEI_KB_ID }}
+      WUWEI_FOLDER_ID: ${{ secrets.WUWEI_FOLDER_ID }}
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 配置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 配置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 安装 westock 数据源（全局, 加速 npx 调用）
+        run: npm install -g westock-data-skillhub@1.0.3
+
+      - name: 生成 / 刷新主板清单
+        run: python3 gen_mainboard.py
+
+      - name: 运行月度扫描（初筛 → 过滤 → 归档）
+        run: |
+          chmod +x wuwei_monthly_run.sh
+          if [ -n "${{ github.event.inputs.period }}" ]; then
+            ./wuwei_monthly_run.sh "${{ github.event.inputs.period }}"
+          else
+            ./wuwei_monthly_run.sh
+          fi
+
+      - name: 提交产出与清单
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A outputs all_mainboard.csv
+          if git diff --cached --quiet; then
+            echo "无变更, 跳过提交"
+          else
+            git commit -m "chore: 武威月度精选池 $(date +%Y%m)"
+            git push
+          fi

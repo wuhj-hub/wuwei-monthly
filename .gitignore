@@ -1,0 +1,9 @@
+# 依赖缓存
+node_modules/
+.npm/
+__pycache__/
+*.pyc
+
+# 本地临时
+*.log
+.DS_Store
