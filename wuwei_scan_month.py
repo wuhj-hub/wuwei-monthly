@@ -15,6 +15,9 @@ from collections import Counter
 OUT = os.environ.get("WUWEI_OUT", "/sandbox/workspace/outputs")
 SELF_TEST = "/tmp/diag.json"
 
+# 模块级 K 线缓存：避免同一只股票在 G1 扫描中被多次拉取
+_klines_cache = {}
+
 def cli(cmd, retry=3):
     for _ in range(retry):
         try:
@@ -26,6 +29,10 @@ def cli(cmd, retry=3):
             pass
         time.sleep(1)
     return ""
+
+def clear_cache():
+    """清空模块级 K 线缓存"""
+    _klines_cache.clear()
 
 def parse_kline(md):
     lines = [l.strip() for l in md.split("\n") if l.strip().startswith("|")]
@@ -39,6 +46,10 @@ def parse_kline(md):
     return rows
 
 def get_monthly(code, limit=24):
+    """获取月K线（带模块级缓存，全市场扫描时大量复用）"""
+    cache_key = f"{code}_{limit}"
+    if cache_key in _klines_cache:
+        return _klines_cache[cache_key]
     md = cli(f"kline {code} --period month --limit {limit}")
     recs = []
     for r in parse_kline(md):
@@ -48,6 +59,7 @@ def get_monthly(code, limit=24):
         except Exception:
             continue
     recs.sort(key=lambda x: x["date"])
+    _klines_cache[cache_key] = recs
     return recs
 
 def yang(r):
@@ -180,24 +192,61 @@ def verify_all(only=None):
                     hit += 1
         print(f"[verify] {period}: 召回 {hit}/{n} = {hit/n*100:.1f}%")
 
+def calc_support_and_shrink(rows, month_end):
+    """从月K线中计算信号类型、支撑深度、缩量比例。
+    返回 (signal_type, support, shrink_max) 或 (None, None, None)"""
+    if not rows:
+        return None, None, None
+    k4 = None
+    for i, r in enumerate(rows):
+        if r["date"] <= month_end:
+            k4 = i
+    if k4 is None or k4 < 3:
+        return None, None, None
+    k1, k2, k3, k4r = rows[k4 - 3], rows[k4 - 2], rows[k4 - 1], rows[k4]
+    sig_type = signal(rows, month_end)
+    if sig_type == "无":
+        return None, None, None
+    support = 0.0
+    if k4r["close"] > 0 and k1["low"] > 0:
+        support = (k4r["close"] - k1["low"]) / k4r["close"]
+    ratios = []
+    if k2["vol"] > 0:
+        ratios.append(k3["vol"] / k2["vol"])
+        ratios.append(k4r["vol"] / k2["vol"])
+    shrink_max = max(ratios) if ratios else 1.0
+    return sig_type, support, shrink_max
+
+
 def full_scan(period, list_path):
-    """全市场模式: 读全市场股票列表CSV(code,name), 在该月末跑规则, 输出信号池。"""
+    """全市场模式: 读全市场股票列表CSV(code,name), 在该月末跑规则, 输出信号池。
+    v3 增强: 输出 support(支撑深度) + shrink_max(缩量比例) 列, v2.1 过滤时直接读取无需二次拉K线。"""
     month_end = month_end_of(period)
     stocks = read_csv(list_path)
     sig = []
+    # 提高并发度：npx 主要是 I/O 等待，8 workers 安全
     def worker(item):
-        code, name = item
-        rows = get_monthly(code, 24)
-        return code, name, signal(rows, month_end)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
-        for code, name, res in ex.map(worker, stocks):
-            if res != "无":
-                sig.append((code, name, res))
+        try:
+            code, name = item
+            rows = get_monthly(code, 24)
+            sig_type, support, shrink_max = calc_support_and_shrink(rows, month_end)
+            if sig_type is None:
+                return None
+            return code, name, sig_type, support, shrink_max
+        except Exception as e:
+            print(f"[WARN] {item[0]} 扫描异常: {e}", flush=True)
+            return None
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+        for r in ex.map(worker, stocks):
+            if r:
+                sig.append(r)
     out = os.path.join(OUT, f"ww_period_{period}_full.csv")
     with open(out, "w", encoding="utf-8-sig", newline="") as f:
-        w = csv.writer(f); w.writerow(["code", "name", "source"])
-        for code, name, res in sig:
-            w.writerow([code, name, f"auto_{res}"])
+        w = csv.writer(f)
+        w.writerow(["code", "name", "source", "support", "shrink_max"])
+        for code, name, res, support, shrink_max in sig:
+            w.writerow([code, name, f"auto_{res}",
+                        round(support, 4), round(shrink_max, 4)])
     print(f"\n[done] {period} 全市场扫描: 选出 {len(sig)} 只 -> {out}")
 
 def main():
