@@ -26,41 +26,50 @@ _spec.loader.exec_module(wsm)
 
 
 def cli(cmd, retry=3):
-    import subprocess
+    import subprocess, time
     for _ in range(retry):
         try:
-            p = subprocess.run(["timeout", "180"] + WESTOCK.split() + cmd.split(),
-                               capture_output=True, text=True, timeout=190)
-            return p.stdout + p.stderr
+            p = subprocess.run(
+                f"timeout 180 npx -y westock-data-skillhub@1.0.3 {cmd}",
+                shell=True, capture_output=True, text=True, timeout=190)
+            if p.stdout.strip():
+                return p.stdout
+            # stderr 仅日志，不混入解析
         except Exception:
-            continue
+            pass
+        time.sleep(1)
     return ""
 
 
 def fetch_ma250(codes):
     """批量获取年线(MA250)数据，返回 {code: {close, ma250, ratio}}"""
     ma = {}
+    if not codes:
+        return ma
     for i in range(0, len(codes), 20):
         batch = codes[i:i + 20]
-        out = cli(f"technical {','.join(batch)} --group ma")
-        lines = [l for l in out.splitlines() if l.strip().startswith("|")]
-        if len(lines) >= 2:
-            hdr = [h.strip() for h in lines[0].strip().strip("|").split("|") if h.strip()]
-            try:
-                ci = hdr.index("code"); pi = hdr.index("closePrice"); mi = hdr.index("ma.MA_250")
-            except ValueError:
-                continue
-            for l in lines[2:]:
-                cols = [x.strip() for x in l.strip().strip("|").split("|") if x.strip()]
-                if len(cols) > max(ci, pi, mi):
-                    code, price_s, ma250_s = cols[ci], cols[pi], cols[mi]
-                    if code in set(codes):
-                        try:
-                            price, ma250 = float(price_s), float(ma250_s)
-                            ratio = (price - ma250) / ma250 if ma250 > 0 else -999
-                            ma[code] = {"close": price, "ma250": ma250, "ratio": ratio}
-                        except (ValueError, TypeError):
-                            pass
+        try:
+            out = cli(f"technical {','.join(batch)} --group ma")
+            lines = [l for l in out.splitlines() if l.strip().startswith("|")]
+            if len(lines) >= 2:
+                hdr = [h.strip() for h in lines[0].strip().strip("|").split("|") if h.strip()]
+                try:
+                    ci = hdr.index("code"); pi = hdr.index("closePrice"); mi = hdr.index("ma.MA_250")
+                except ValueError:
+                    continue
+                for l in lines[2:]:
+                    cols = [x.strip() for x in l.strip().strip("|").split("|") if x.strip()]
+                    if len(cols) > max(ci, pi, mi):
+                        code, price_s, ma250_s = cols[ci], cols[pi], cols[mi]
+                        if code in set(codes):
+                            try:
+                                price, ma250 = float(price_s), float(ma250_s)
+                                ratio = (price - ma250) / ma250 if ma250 > 0 else -999
+                                ma[code] = {"close": price, "ma250": ma250, "ratio": ratio}
+                            except (ValueError, TypeError):
+                                pass
+        except Exception as e:
+            print(f"[WARN] ma250 batch {i} 异常: {e}", file=sys.stderr)
         print(f"[ma250] batch {i} ({len(batch)}) done", file=sys.stderr)
     return ma
 
@@ -85,18 +94,21 @@ def fetch_finance(codes):
         return fin
     for i in range(0, len(codes), 10):
         batch = codes[i:i + 10]
-        out = cli(f"finance {','.join(batch)} --type lrb --num 1")
-        lines = [l for l in out.splitlines() if l.strip().startswith("|")]
-        if len(lines) >= 2:
-            hdr = [h.strip() for h in lines[0].strip().strip("|").split("|")]
-            if all(c in hdr for c in ("SecuCode", "NPParentCompanyOwners", "EndDate")):
-                sci, npi, edi = hdr.index("SecuCode"), hdr.index("NPParentCompanyOwners"), hdr.index("EndDate")
-                for l in lines[2:]:
-                    cols = [x.strip() for x in l.strip().strip("|").split("|")]
-                    if len(cols) > max(sci, npi, edi):
-                        code, npv, ed = cols[sci], cols[npi], cols[edi]
-                        if code in set(codes):
-                            fin[code] = (npv, ed)
+        try:
+            out = cli(f"finance {','.join(batch)} --type lrb --num 1")
+            lines = [l for l in out.splitlines() if l.strip().startswith("|")]
+            if len(lines) >= 2:
+                hdr = [h.strip() for h in lines[0].strip().strip("|").split("|")]
+                if all(c in hdr for c in ("SecuCode", "NPParentCompanyOwners", "EndDate")):
+                    sci, npi, edi = hdr.index("SecuCode"), hdr.index("NPParentCompanyOwners"), hdr.index("EndDate")
+                    for l in lines[2:]:
+                        cols = [x.strip() for x in l.strip().strip("|").split("|")]
+                        if len(cols) > max(sci, npi, edi):
+                            code, npv, ed = cols[sci], cols[npi], cols[edi]
+                            if code in set(codes):
+                                fin[code] = (npv, ed)
+        except Exception as e:
+            print(f"[WARN] finance batch {i} 异常: {e}", file=sys.stderr)
         print(f"[finance] batch {i} ({len(batch)}) done", file=sys.stderr)
     return fin
 
@@ -169,42 +181,70 @@ def main():
         sys.exit(1)
     month_end = wsm.month_end_of(period)
 
-    # 读 G1 结果
+    # 读 G1 结果 — 支持新旧两种格式
+    # 新格式(v3): code, name, source, support, shrink_max
+    # 旧格式:     code, name, source
     g1 = []
+    has_detail = False
     with open(inp, encoding="utf-8-sig") as f:
-        for r in csv.DictReader(f):
+        reader = csv.DictReader(f)
+        field_names = reader.fieldnames or []
+        has_detail = "support" in field_names and "shrink_max" in field_names
+        for r in reader:
             code = wsm.norm_code((r.get("code") or "").strip())
             name = (r.get("name") or code).strip()
-            if code:
-                g1.append((code, name))
-    print(f"[v21] G1 候选 {len(g1)} 只, period={period}", file=sys.stderr)
+            if not code:
+                continue
+            if has_detail:
+                try:
+                    support = float(r.get("support", 0) or 0)
+                    shrink_max = float(r.get("shrink_max", 1) or 1)
+                except (ValueError, TypeError):
+                    support, shrink_max = 0.0, 1.0
+                g1.append((code, name, support, shrink_max))
+            else:
+                g1.append((code, name, None, None))
+    print(f"[v21] G1 候选 {len(g1)} 只, period={period}, 含详细数据={has_detail}", file=sys.stderr)
 
-    # 并行取月线 + 算支撑深度/缩量max + 重算信号
+    # 月线验证 + 支撑/缩量计算（仅旧格式无详细数据时需要拉K线）
     def worker(item):
-        code, name = item
-        recs = wsm.get_monthly(code, 24)
-        res = wsm.signal(recs, month_end)
-        if res == "无":
+        try:
+            code, name, support, shrink_max = item
+            if has_detail and support is not None and shrink_max is not None:
+                # 新格式：直接复用 G1 数据，无需重新拉 K 线
+                recs = wsm.get_monthly(code, 24)
+                res = wsm.signal(recs, month_end)
+                if res == "无":
+                    return None
+                return code, name, res, support, shrink_max
+            else:
+                # 旧格式：回退到原逻辑拉取 K 线
+                recs = wsm.get_monthly(code, 24)
+                res = wsm.signal(recs, month_end)
+                if res == "无":
+                    return None
+                k4 = None
+                for i, r in enumerate(recs):
+                    if r["date"] <= month_end:
+                        k4 = i
+                if k4 is None or k4 < 3:
+                    return None
+                k1, k2, k3, k4r = recs[k4 - 3], recs[k4 - 2], recs[k4 - 1], recs[k4]
+                support_val = 0.0
+                if k4r["close"] > 0 and k1["low"] > 0:
+                    support_val = (k4r["close"] - k1["low"]) / k4r["close"]
+                ratios = []
+                if k2["vol"] > 0:
+                    ratios.append(k3["vol"] / k2["vol"])
+                    ratios.append(k4r["vol"] / k2["vol"])
+                shrink_max_val = max(ratios) if ratios else 1.0
+                return code, name, res, support_val, shrink_max_val
+        except Exception as e:
+            print(f"[WARN] v21 worker {item[0]} 异常: {e}", file=sys.stderr)
             return None
-        k4 = None
-        for i, r in enumerate(recs):
-            if r["date"] <= month_end:
-                k4 = i
-        if k4 is None or k4 < 3:
-            return None
-        k1, k2, k3, k4r = recs[k4 - 3], recs[k4 - 2], recs[k4 - 1], recs[k4]
-        support = 0.0
-        if k4r["close"] > 0 and k1["low"] > 0:
-            support = (k4r["close"] - k1["low"]) / k4r["close"]  # 支撑深度≥5%硬过滤
-        ratios = []
-        if k2["vol"] > 0:
-            ratios.append(k3["vol"] / k2["vol"])
-            ratios.append(k4r["vol"] / k2["vol"])
-        shrink_max = max(ratios) if ratios else 1.0
-        return code, name, res, support, shrink_max
 
     results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
         for r in ex.map(worker, g1):
             if r:
                 results.append(r)
@@ -220,22 +260,25 @@ def main():
     # 评分 + 决策
     out_rows = []
     for code, name, res, support, shrink_max in results:
-        npv, ed = fin.get(code, ("", ""))
-        fst = status_of(npv)
-        ma_info = ma250.get(code, {})
-        ma_ratio = ma_info.get("ratio") if ma_info else None
-        total, _, ma250_note = score(res, support, shrink_max, fst, ma_ratio)
-        decision, reason = decide(res, support, fst, total)
-        out_rows.append({
-            "code": code, "name": name, "signal": res,
-            "support_pct": round(support * 100, 2),
-            "shrink_max_pct": round(shrink_max * 100, 1),
-            "finance": fst, "net_profit": npv, "report_end": ed,
-            "ma250_status": ma250_note,
-            "ma250_close": ma_info.get("close", ""),
-            "ma250_value": ma_info.get("ma250", ""),
-            "score": total, "decision": decision, "reason": reason,
-        })
+        try:
+            npv, ed = fin.get(code, ("", ""))
+            fst = status_of(npv)
+            ma_info = ma250.get(code, {})
+            ma_ratio = ma_info.get("ratio") if ma_info else None
+            total, _, ma250_note = score(res, support, shrink_max, fst, ma_ratio)
+            decision, reason = decide(res, support, fst, total)
+            out_rows.append({
+                "code": code, "name": name, "signal": res,
+                "support_pct": round(support * 100, 2),
+                "shrink_max_pct": round(shrink_max * 100, 1),
+                "finance": fst, "net_profit": npv, "report_end": ed,
+                "ma250_status": ma250_note,
+                "ma250_close": ma_info.get("close", ""),
+                "ma250_value": ma_info.get("ma250", ""),
+                "score": total, "decision": decision, "reason": reason,
+            })
+        except Exception as e:
+            print(f"[WARN] {code} {name} 评分异常: {e}", file=sys.stderr)
 
     # 写 CSV
     csv_path = os.path.join(OUT, f"ww_period_{period}_v21.csv")
