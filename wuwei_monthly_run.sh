@@ -10,6 +10,7 @@
 #   WUWEI_KB_ID      知识库ID       默认 武威知识库
 #   WUWEI_FOLDER_ID  子文件夹ID     默认 月线公式验证
 #   IMA_OPENAPI_CLIENTID / IMA_OPENAPI_APIKEY  知识库上传凭证(缺则跳过上传)
+#   PUSHPLUS_TOKEN   pushplus 微信推送 token (缺则跳过推送)
 # 用法:
 #   ./wuwei_monthly_run.sh            # 自动跑上月 (YYYYMM)
 #   ./wuwei_monthly_run.sh 202606     # 指定月份
@@ -64,6 +65,63 @@ if [ -n "${IMA_OPENAPI_CLIENTID:-}" ] && [ -n "${IMA_OPENAPI_APIKEY:-}" ]; then
   echo "[wuwei-monthly] 精选池已归档至「月线公式验证」  $(date '+%F %T')"
 else
   echo "[wuwei-monthly] 未配置 IMA_OPENAPI_CLIENTID/APIKEY, 跳过知识库上传, 仅本地产出已生成"
+fi
+
+# 6. pushplus 微信推送 (缺 token 则跳过)
+if [ -n "${PUSHPLUS_TOKEN:-}" ]; then
+  "$PY" -c "
+import json, urllib.request, csv, os
+
+period = '$PERIOD'
+out = '$OUT'
+token = '$PUSHPLUS_TOKEN'
+
+# 读取 v21 结果
+v21_csv = os.path.join(out, f'ww_period_{period}_v21.csv')
+heavy, reject_shallow, reject_loss = 0, 0, 0
+heavy_list = []
+if os.path.exists(v21_csv):
+    with open(v21_csv, encoding='utf-8-sig') as f:
+        for row in csv.DictReader(f):
+            dec = row.get('decision','')
+            if dec == '重仓':
+                heavy += 1
+                heavy_list.append(f\"{row.get('name','')}({row.get('code','')})\")
+            elif '亏损' in dec:
+                reject_loss += 1
+            else:
+                reject_shallow += 1
+
+title = f'武威 {period} 月度扫描完成'
+lines = [
+    f'## 📊 武威月线G1扫描报告 ({period})',
+    f'',
+    f'| 指标 | 数值 |',
+    f'|---|---|',
+    f'| G1初筛信号 | {heavy+reject_shallow+reject_loss} 只 |',
+    f'| ✅ 重仓精选 | **{heavy} 只** |',
+    f'| ❌ 否决(浅支撑) | {reject_shallow} 只 |',
+    f'| ❌ 否决(亏损股) | {reject_loss} 只 |',
+]
+if heavy_list:
+    lines += ['', '### 🏆 重仓精选池', '']
+    lines += [f'- {h}' for h in heavy_list]
+lines += ['', f'> 详情: https://github.com/wuhj-hub/wuwei-monthly/actions']
+
+content = '\n'.join(lines)
+payload = json.dumps({'token': token, 'title': title, 'content': content, 'template': 'markdown'}).encode()
+req = urllib.request.Request('https://www.pushplus.plus/send', data=payload,
+    headers={'Content-Type': 'application/json'})
+try:
+    resp = urllib.request.urlopen(req, timeout=15)
+    result = json.loads(resp.read().decode())
+    if result.get('code') == 200:
+        print('[pushplus] 推送成功')
+    else:
+        print(f'[pushplus] 推送失败: {result}')
+except Exception as e:
+    print(f'[pushplus] 推送异常: {e}')
+" || echo "[WARN] pushplus 推送失败, 跳过"
 fi
 
 echo "[wuwei-monthly] 完成  $(date '+%F %T')"

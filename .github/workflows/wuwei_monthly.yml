@@ -27,6 +27,7 @@ jobs:
       IMA_OPENAPI_APIKEY: ${{ secrets.IMA_OPENAPI_APIKEY }}
       WUWEI_KB_ID: ${{ secrets.WUWEI_KB_ID }}
       WUWEI_FOLDER_ID: ${{ secrets.WUWEI_FOLDER_ID }}
+      PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
     steps:
       - name: 检出仓库
         uses: actions/checkout@v4
