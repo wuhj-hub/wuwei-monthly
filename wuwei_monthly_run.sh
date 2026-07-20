@@ -59,8 +59,8 @@ echo "[wuwei-monthly] v2.1 过滤完成 -> $V21MD"
 
 # 5. 归档: 上传到「月线公式验证」子文件夹 (缺密钥则跳过, 仅保留本地产出)
 if [ -n "${IMA_OPENAPI_CLIENTID:-}" ] && [ -n "${IMA_OPENAPI_APIKEY:-}" ]; then
-  "$PY" "$UPLOAD" --file-path "$V21MD"  --knowledge-base-id "$KB_ID" --folder-id "$FOLDER_ID"
-  "$PY" "$UPLOAD" --file-path "$V21CSV" --knowledge-base-id "$KB_ID" --folder-id "$FOLDER_ID"
+  "$PY" "$UPLOAD" --file-path "$V21MD"  --knowledge-base-id "$KB_ID" --folder-id "$FOLDER_ID" || echo "[WARN] v21.md 上传失败, 跳过"
+  "$PY" "$UPLOAD" --file-path "$V21CSV" --knowledge-base-id "$KB_ID" --folder-id "$FOLDER_ID" || echo "[WARN] v21.csv 上传失败, 跳过"
   echo "[wuwei-monthly] 精选池已归档至「月线公式验证」  $(date '+%F %T')"
 else
   echo "[wuwei-monthly] 未配置 IMA_OPENAPI_CLIENTID/APIKEY, 跳过知识库上传, 仅本地产出已生成"
