@@ -414,7 +414,7 @@ def get_file_size(file_path):
     except OSError as e:
         raise FileNotFoundError(f"error in get file size: {e}")
 
-def create_media(knowledge_base_id, filename, file_size, media_type, content_type):
+def create_media(knowledge_base_id, filename, file_size, media_type, content_type, folder_id=None):
     """创建媒体,获取COS上传凭证"""
     # 提取文件扩展名（无点号）
     file_ext = Path(filename).suffix.lower()
@@ -429,6 +429,10 @@ def create_media(knowledge_base_id, filename, file_size, media_type, content_typ
         "knowledge_base_id": knowledge_base_id,
         "file_ext": file_ext
     }
+    
+    # 添加folder_id参数（可选）
+    if folder_id:
+        body["folder_id"] = folder_id
     
     result = send_ima_api_request("openapi/wiki/v1/create_media", json.dumps(body))
     response = json.loads(result)
@@ -522,7 +526,7 @@ def upload_file_to_knowledge_base(file_path, knowledge_base_id, rename_filename=
     filename = check_repeat_name(knowledge_base_id, filename, media_type, folder_id)
     
     # 3. 创建媒体,获取COS上传凭证
-    media_id, cos_credential = create_media(knowledge_base_id, filename, file_size, media_type, content_type)
+    media_id, cos_credential = create_media(knowledge_base_id, filename, file_size, media_type, content_type, folder_id)
     
     # 4. 上传文件到COS
     cos_args = {
