@@ -8,7 +8,7 @@
 #   WUWEI_OUT        产出目录       默认 <仓库>/outputs
 #   WUWEI_LIST       主板清单CSV    默认 <仓库>/all_mainboard.csv
 #   WUWEI_KB_ID      知识库ID       默认 武威知识库
-#   WUWEI_FOLDER_ID  子文件夹ID     默认 月线公式验证
+#   WUWEI_FOLDER_ID  子文件夹ID     默认 武威G1月度自动扫描
 #   IMA_OPENAPI_CLIENTID / IMA_OPENAPI_APIKEY  知识库上传凭证(缺则跳过上传)
 #   PUSHPLUS_TOKEN   pushplus 微信推送 token (缺则跳过推送)
 # 用法:
@@ -24,7 +24,7 @@ mkdir -p "$OUT"
 
 LIST="${WUWEI_LIST:-$REPO/all_mainboard.csv}"
 KB_ID="${WUWEI_KB_ID:-Q2g2GtNNL-9VcrQkbIfCRKzZl5K2ag2sQlcqcNMr3Mc=}"
-FOLDER_ID="${WUWEI_FOLDER_ID:-folder_7483830961203700}"
+FOLDER_ID="${WUWEI_FOLDER_ID:-folder_7484032975660724}"
 UPLOAD="$REPO/upload_kb.py"
 PY="${PYTHON:-python3}"
 
@@ -58,11 +58,11 @@ V21CSV="$OUT/ww_period_${PERIOD}_v21.csv"
 test -f "$V21MD" || { echo "[ERR] v2.1 未产出 $V21MD"; exit 1; }
 echo "[wuwei-monthly] v2.1 过滤完成 -> $V21MD"
 
-# 5. 归档: 上传到「月线公式验证」子文件夹 (缺密钥则跳过, 仅保留本地产出)
+# 5. 归档: 上传到「武威G1月度自动扫描」子文件夹 (缺密钥则跳过, 仅保留本地产出)
 if [ -n "${IMA_OPENAPI_CLIENTID:-}" ] && [ -n "${IMA_OPENAPI_APIKEY:-}" ]; then
   "$PY" "$UPLOAD" --file-path "$V21MD"  --knowledge-base-id "$KB_ID" --folder-id "$FOLDER_ID" || echo "[WARN] v21.md 上传失败, 跳过"
   "$PY" "$UPLOAD" --file-path "$V21CSV" --knowledge-base-id "$KB_ID" --folder-id "$FOLDER_ID" || echo "[WARN] v21.csv 上传失败, 跳过"
-  echo "[wuwei-monthly] 精选池已归档至「月线公式验证」  $(date '+%F %T')"
+  echo "[wuwei-monthly] 精选池已归档至「武威G1月度自动扫描」  $(date '+%F %T')"
 else
   echo "[wuwei-monthly] 未配置 IMA_OPENAPI_CLIENTID/APIKEY, 跳过知识库上传, 仅本地产出已生成"
 fi
