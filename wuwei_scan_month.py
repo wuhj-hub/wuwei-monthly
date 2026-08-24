@@ -144,6 +144,20 @@ def scan_period(period, csv_path):
             if res != "无":
                 sig.append((code, name, res))
                 print(f"[SIG] {name}: {res}", flush=True)
+    # 实时ST/退市兜底（清单快照可能漏掉后续戴帽股）
+    try:
+        import sys as _sys, os as _os
+        _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+        from st_guard import filter_st
+        _items = [{"code": c, "name": n} for c, n, _ in sig]
+        _kept, _dropped = filter_st(_items)
+        _drop_codes = {d["code"] for d in _dropped}
+        sig = [t for t in sig if t[0] not in _drop_codes]
+        if _dropped:
+            print(f"[ST过滤] 剔除 {len(_dropped)} 只ST/退市: {[d['name'] for d in _dropped]}", file=sys.stderr)
+    except Exception as e:
+        print(f"[WARN] st_guard 校验失败: {e}", file=sys.stderr)
+
     out = os.path.join(OUT, f"ww_period_{period}_auto.csv")
     with open(out, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f); w.writerow(["code", "name", "source"])
