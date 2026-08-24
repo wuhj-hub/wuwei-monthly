@@ -249,6 +249,18 @@ def main():
             if r:
                 results.append(r)
     print(f"[v21] 月线有效 {len(results)} 只", file=sys.stderr)
+    # 实时ST/退市兜底（清单快照可能漏掉后续戴帽股）
+    try:
+        import sys as _sys, os as _os
+        _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+        from st_guard import filter_st
+        _items = [{"code": r[0], "name": r[1]} for r in results]
+        _kept, _dropped = filter_st(_items)
+        results = [r for r in results if r[0] not in {d["code"] for d in _dropped}]
+        if _dropped:
+            print(f"[ST过滤] 剔除 {len(_dropped)} 只ST/退市: {[d['name'] for d in _dropped]}", file=sys.stderr)
+    except Exception as e:
+        print(f"[WARN] st_guard 校验失败: {e}", file=sys.stderr)
 
     # 财务批量
     codes = [r[0] for r in results]
